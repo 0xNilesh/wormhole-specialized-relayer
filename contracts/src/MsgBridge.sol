@@ -1,75 +1,83 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+// Import the Wormhole interface for message passing
 import {IWormhole} from "@wormhole/ethereum/contracts/interfaces/IWormhole.sol";
 
 contract MsgBridge {
-    /**
-     * Address of the Wormhole contract on this chain.
-     */
-    address wormhole;
+    // Address of the contract owner
+    address public owner;
 
-    /** 
-     * Wormhole chain ID of this contract.
-     */
-    uint16 chainId;
+    // Address of the Wormhole contract on this chain
+    address public wormhole;
 
-    /**
-     * The number of block confirmations needed before the Wormhole network
-     * will attest a message.
-     */
-    uint8 wormholeFinality;
+    // Wormhole chain ID of this contract
+    uint16 public chainId;
 
-    /**
-     * Wormhole chain ID to known emitter address mapping. xDapps using
-     * Wormhole should register all deployed contracts on each chain to
-     * verify that messages being consumed are from trusted contracts.
-     */
-    mapping(uint16 => bytes32) registeredEmitters;
+    // The number of block confirmations needed before the Wormhole network
+    // will attest a message
+    uint8 public wormholeFinality;
 
-    // Verified message hash to received message mapping.
-    mapping(bytes32 => string) receivedMessages;
+    // Mapping from Wormhole chain ID to known emitter address
+    mapping(uint16 => bytes32) public registeredEmitters;
 
-    // Verified message hash to received message mapping.
-    mapping(bytes32 => bool) consumedMessages;
+    // Verified message hash to received message mapping
+    mapping(bytes32 => string) public receivedMessages;
 
-    // State vars.
+    // Verified message hash to consumed status mapping
+    mapping(bytes32 => bool) public consumedMessages;
+
+    // Structure for message details
     struct Msg {
-        string msg;
-        uint32 id;
-        uint16 emitterChainId;
-        uint16 destinationChainId;
-        address sender;
+        string msg;              // Message content
+        uint32 id;               // Unique identifier for the message
+        uint16 emitterChainId;   // Chain ID of the message emitter
+        uint16 destinationChainId; // Chain ID of the message destination
+        address sender;          // Address of the message sender
     }
-    Msg public lastMessageReceived;
-    uint32 id;
 
+    // State variable for the last message received
+    Msg public lastMessageReceived;
+
+    // Unique identifier for messages
+    uint32 public id;
+
+    // OnlyOwner modifier to restrict access to certain functions
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Caller is not the owner");
+        _;
+    }
+
+    // Constructor to initialize contract variables
     constructor(
         address wormhole_,
         uint16 chainId_,
         uint8 wormholeFinality_
     ) {
+        owner = msg.sender;      // Set the contract deployer as the owner
         wormhole = wormhole_;
         chainId = chainId_;
         wormholeFinality = wormholeFinality_;
     }
 
+    // Function to get the message fee required by Wormhole
     function getMsgFee() public view returns (uint256) {
         return IWormhole(wormhole).messageFee();
     }
 
+    // Function to send a message to a specified recipient chain
     function sendMessage(
         string memory message, 
         uint16 recipientChain
     ) public payable returns (uint64 messageSequence) {
-        // Cache Wormhole instance and fees to save on gas.
+        // Cache the Wormhole instance and fees to save on gas
         IWormhole wormholeCore = IWormhole(wormhole);
         uint256 wormholeFee = getMsgFee();
 
-        // Confirm that the caller has sent enough value to pay for the Wormhole message fee.
+        // Ensure that the caller has sent enough value to cover the Wormhole message fee
         require(msg.value == wormholeFee, "Insufficient value");
 
-        // Create the Msg struct.
+        // Create the Msg struct
         Msg memory parsedMessage = Msg({
             id: ++id,
             msg: message,
@@ -78,51 +86,67 @@ contract MsgBridge {
             destinationChainId: recipientChain
         });
 
-        // Encode the Msg struct.
+        // Encode the Msg struct for sending
         bytes memory encodedMessage = abi.encode(parsedMessage);
 
-        // Send the message by calling publishMessage on the Wormhole core contract.
+        // Publish the message using the Wormhole core contract
         messageSequence = wormholeCore.publishMessage{value: wormholeFee}(
-            0, // batchID
+            0, // batchID 
             encodedMessage,
             wormholeFinality
         );
     }
 
+    // Function to receive and process a message
     function receiveMessage(bytes memory encodedMessage) public {
         IWormhole wormholeCore = IWormhole(wormhole);
-        // call the Wormhole core contract to parse and verify the encodedMessage
+        
+        // Parse and verify the encoded message using Wormhole
         (
             IWormhole.VM memory wormholeMessage,
             bool valid,
             string memory reason
         ) = wormholeCore.parseAndVerifyVM(encodedMessage);
 
-        // confirm that the Wormhole core contract verified the message
+        // Ensure the Wormhole core contract verified the message
         require(valid, reason);
 
-        // verify that this message was emitted by a registered emitter
+        // Verify that the message was emitted by a registered emitter
         require(_verifyEmitter(wormholeMessage), "unknown emitter");
 
-        // Decode the message.
+        // Decode the message
         Msg memory parsedMessage = decodeMessage(wormholeMessage.payload);
 
-        // Consume the msg
+        // Consume the message and prevent double processing
         require(!consumedMessages[wormholeMessage.hash], "Msg already consumed");
         receivedMessages[wormholeMessage.hash] = parsedMessage.msg;
         consumedMessages[wormholeMessage.hash] = true;
         lastMessageReceived = parsedMessage;
     }
 
-    // Separate decoding function
+    // Function to decode a message from bytes to Msg struct
     function decodeMessage(bytes memory encodedMessage) public pure returns (Msg memory) {
         return abi.decode(encodedMessage, (Msg));
     }
 
+    // Internal function to verify the message emitter
     function _verifyEmitter(
         IWormhole.VM memory vm
     ) internal view returns (bool) {
-        // Verify that the sender of the Wormhole message is a trusted contract.
+        // Check if the sender of the Wormhole message is a trusted contract
         return registeredEmitters[vm.emitterChainId] == vm.emitterAddress;
+    }
+
+    /**
+     * Register a new emitter for a specific chain.
+     * @param emitterChainId The chain ID of the emitter.
+     * @param emitterAddress The address of the emitter contract.
+     */
+    function registerEmitter(uint16 emitterChainId, address emitterAddress) external onlyOwner {
+        // Convert the address to bytes32 by left-padding with zeros
+        bytes32 paddedAddress = bytes32(uint256(uint160(emitterAddress)));
+
+        // Store the left-padded address in the mapping
+        registeredEmitters[emitterChainId] = paddedAddress;
     }
 }
