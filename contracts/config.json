@@ -1,0 +1,16 @@
+{
+    "testnet": {
+      "Arbitrum": {
+        "network": "Arbitrum Sepolia",
+        "chainId": 421613,
+        "MsgBridge": "0x89EA4409427683C93e37030Ed11aCe3208685370"
+      },
+      "Base": {
+        "network": "Base Sepolia",
+        "chainId": 84531,
+        "MsgBridge": "0x21e1Ce2a651a4FE2504d7500B9ae54951f838258"
+      }
+    },
+    "mainnet": {}
+  }
+  
